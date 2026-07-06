@@ -1,192 +1,179 @@
-import telebot
-from telebot import types
-import re
+from pyrogram import Client, filters
+from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton
 import io
+import re
 import math
+import asyncio
 
-# ضع توكن البوت الخاص بك هنا
-API_TOKEN = '8923140239:AAHTBRLDDWoX__-JXSTBzTf39GKwO0_2oLc'
-bot = telebot.TeleBot(API_TOKEN)
+# بيانات البوت الخاصة بك (احصل على api_id و api_hash من my.telegram.org)
+API_ID = 39825025          # استبدله بـ api_id الخاص بك (رقم)
+API_HASH = "47170fd9a11b3f591bbc56849519f0f8"    # استبدله بـ api_hash الخاص بك (نص)
+BOT_TOKEN = "8923140239:AAHTBRLDDWoX__-JXSTBzTf39GKwO0_2oLc"
 
-# حالات المستخدمين لتتبع الخطوات والبيانات المؤقتة
+app = Client("card_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# تخزين مؤقت لحالات المستخدمين في الذاكرة
 user_states = {}
 
 # لوحة الأزرار الرئيسية
-def main_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    btn1 = types.KeyboardButton("1- تقسيم ملفات (البطاقات)")
-    btn2 = types.KeyboardButton("2- استخراج عبر الـ BIN")
-    btn3 = types.KeyboardButton("3- تنظيف الملف (Clear)")
-    markup.add(btn1, btn2, btn3)
-    return markup
+main_keyboard = ReplyKeyboardMarkup(
+    [[KeyboardButton("1- تقسيم ملفات (البطاقات)")],
+     [KeyboardButton("2- استخراج عبر الـ BIN")],
+     [KeyboardButton("3- تنظيف الملف (Clear)")]],
+    resize_keyboard=True
+)
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "أهلاً بك! اختر أحد الخيارات من الأزرار أدناه للبدء:", reply_markup=main_keyboard())
+@app.on_message(filters.command("start"))
+async def start_cmd(client, message):
+    await message.reply_text("أهلاً بك! اختر أحد الخيارات من الأزرار أدناه للبدء:", reply_markup=main_keyboard)
 
-# --- التعامل مع الضغط على الأزرار ---
-@bot.message_handler(func=lambda message: True)
-def handle_buttons(message):
+# --- معالجة الضغط على الأزرار ---
+@app.on_message(filters.text & filters.incoming)
+async def handle_text(client, message):
     chat_id = message.chat.id
     text = message.text
 
     if text == "1- تقسيم ملفات (البطاقات)":
-        user_states[chat_id] = {'step': 'split_wait_file'}
-        bot.send_message(chat_id, "📥 أرسل ملف البطاقات (حتى 300 ميجابايت).")
-
+        user_states[chat_id] = {"step": "split_wait_file"}
+        await message.reply_text("📥 أرسل ملف البطاقات (يدعم حتى 2 جيجابايت بسرعات خيالية).")
+        return
     elif text == "2- استخراج عبر الـ BIN":
-        user_states[chat_id] = {'step': 'bin_wait_file'}
-        bot.send_message(chat_id, "📥 أرسل بطاقاتك بأي صيغة في رسالة واحدة أو ملف (حتى 300 ميجابايت).")
-
+        user_states[chat_id] = {"step": "bin_wait_file"}
+        await message.reply_text("📥 أرسل ملف البطاقات الخاص بك (يدعم حتى 2 جيجابايت).")
+        return
     elif text == "3- تنظيف الملف (Clear)":
-        user_states[chat_id] = {'step': 'clear_wait_file'}
-        bot.send_message(chat_id, "📥 أرسل بطاقاتك بأي صيغة في رسالة واحدة أو ملف (حتى 300 ميجابايت).")
-        
-    else:
-        # التعامل مع المدخلات النصية التالية للخطوات
-        if chat_id in user_states:
-            current_step = user_states[chat_id].get('step')
-            if current_step == 'split_wait_lines_count':
-                process_splitting_execution(message)
-            elif current_step == 'bin_wait_bins':
-                process_bin_extraction(message)
+        user_states[chat_id] = {"step": "clear_wait_file"}
+        await message.reply_text("📥 أرسل ملف البطاقات المراد تنظيفه (يدعم حتى 2 جيجابايت).")
+        return
 
-# --- استقبال ومعالجة الملفات الكبيرة في الذاكرة ---
-@bot.message_handler(content_types=['document', 'text'])
-def handle_docs_and_text(message):
+    # إذا كان المستخدم يرسل الـ BINs أو عدد الأسطر يدوياً
+    if chat_id in user_states:
+        state = user_states[chat_id].get("step")
+        if state == "split_wait_lines_count":
+            await process_splitting_execution(message)
+        elif state == "bin_wait_bins":
+            await process_bin_extraction(message)
+
+# --- معالجة قراءة وتحميل الملفات الضخمة في الذاكرة ---
+@app.on_message((filters.document | filters.text) & filters.incoming)
+async def handle_files(client, message):
     chat_id = message.chat.id
     if chat_id not in user_states:
         return
 
-    step = user_states[chat_id].get('step')
-    
-    # الحصول على النص (من رسالة أو ملف تيكست)
-    content = ""
-    if message.content_type == 'text':
-        content = message.text
-    elif message.content_type == 'document':
-        if message.document.file_size > 300 * 1024 * 1024:
-            bot.reply_to(message, "❌ حجم الملف كبير جداً! الحد الأقصى هو 300 ميجابايت.")
-            return
-        
-        status_msg = bot.reply_to(message, "⚡ جاري قراءة الملف بسرعة فائقة...")
-        
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        content = downloaded_file.decode('utf-8', errors='ignore')
-        bot.delete_message(chat_id, status_msg.message_id)
+    state = user_states[chat_id].get("step")
+    if state in ["split_wait_lines_count", "bin_wait_bins"]:
+        return # تخطي الملفات إذا كنا ننتظر أرقام أو نصوص
 
-    # توجيه الملف حسب الخطوة
-    if step == 'split_wait_file':
-        # فلترة وتصفية الأسطر أولاً لضمان وجود بطاقات فقط تحت بعضها
-        # النمط يبحث عن أي سطر يحتوي على سلسلة أرقام تبدأ بـ 6 أرقام على الأقل
-        cards = re.findall(r'\d{6,}.*', content)
+    content = ""
+    
+    if message.text:
+        content = message.text
+    elif message.document:
+        status_msg = await message.reply_text("⚡ جاري تحميل وقراءة الملف الضخم في الذاكرة بأقصى سرعة...")
         
+        # تحميل الملف مباشرة إلى الذاكرة (Memory Stream) دون حفظه على القرص لسرعة خارقة
+        file_buffer = io.BytesIO()
+        await client.download_media(message.document, in_memory=file_buffer)
+        file_buffer.seek(0)
+        
+        content = file_buffer.read().decode("utf-8", errors="ignore")
+        await status_msg.delete()
+
+    # توجيه البيانات بناءً على العملية المطلوبة
+    if state == "split_wait_file":
+        cards = re.findall(r'\d{6,}.*', content)
         if not cards:
-            bot.reply_to(message, "❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة في هذا الملف.")
+            await message.reply_text("❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة.")
             user_states.pop(chat_id, None)
             return
-            
-        # حفظ البطاقات المفلترة والانتقال لسؤال المستخدم عن عدد الأسطر
-        user_states[chat_id]['cards_list'] = cards
-        user_states[chat_id]['step'] = 'split_wait_lines_count'
-        bot.reply_to(message, f"✅ تم قراءة وتصفية {len(cards)} بطاقة بنجاح.\n\n🔢 كم سطر (بطاقة) تريد في كل ملف؟ (أرسل الرقم فقط)")
         
-    elif step == 'bin_wait_file':
-        user_states[chat_id]['file_content'] = content
-        user_states[chat_id]['step'] = 'bin_wait_bins'
-        bot.reply_to(message, "✅ تم قراءة الملف بنجاح.\n\n📥 الآن، أرسل قائمة الـ BINs (من 6 إلى 11 رقم) المراد استخراجها، مفصولة بأي فاصل.\n\nمثال: 442755, 4852464, 434769")
+        user_states[chat_id]["cards_list"] = cards
+        user_states[chat_id]["step"] = "split_wait_lines_count"
+        await message.reply_text(f"✅ تم قراءة وتصفية {len(cards)} بطاقة بنجاح.\n\n🔢 كم سطر (بطاقة) تريد في كل ملف؟ (أرسل الرقم فقط)")
 
-    elif step == 'clear_wait_file':
-        process_clearing(message, content)
+    elif state == "bin_wait_file":
+        user_states[chat_id]["file_content"] = content
+        user_states[chat_id]["step"] = "bin_wait_bins"
+        await message.reply_text("✅ تم قراءة الملف بنجاح.\n\n📥 الآن، أرسل قائمة الـ BINs (من 6 إلى 11 رقم)، مفصولة بأي فاصل.\n\nمثال: 442755, 4852464")
 
-# --- تنفيذ عملية التقسيم (تعديل الزر 1) ---
-def process_splitting_execution(message):
+    elif state == "clear_wait_file":
+        await process_clearing(message, content)
+
+# --- تنفيذ التقسيم (الزر 1) ---
+async def process_splitting_execution(message):
     chat_id = message.chat.id
     input_text = message.text
-    
-    if not input_text.isdigit():
-        bot.reply_to(message, "❌ الرجاء إرسال رقم صحيح فقط!")
-        return
-        
-    lines_per_file = int(input_text)
-    if lines_per_file <= 0:
-        bot.reply_to(message, "❌ يجب أن يكون العدد أكبر من 0.")
-        return
-        
-    cards_list = user_states[chat_id].get('cards_list', [])
-    total_cards = len(cards_list)
-    
-    # حساب عدد الملفات المطلوبة
-    total_files = math.ceil(total_cards / lines_per_file)
-    
-    bot.send_message(chat_id, f"⚡ جاري تقسيم البطاقات إلى {total_files} ملف(ات)...")
-    
-    # تقسيم وإرسال الملفات بشكل فوري من الذاكرة
-    for i in range(total_files):
-        start_index = i * lines_per_file
-        end_index = start_index + lines_per_file
-        chunk = cards_list[start_index:end_index]
-        
-        output_text = "\n".join(chunk)
-        filename = f"split_part_{i+1}.txt"
-        
-        # تحويل النص لملف في الذاكرة وإرساله بسرعة خيالية
-        bio = io.BytesIO(output_text.encode('utf-8'))
-        bio.name = filename
-        bot.send_document(chat_id, bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} بطاقة.")
-        
-    # تنظيف الحالة بعد الانتهاء
-    user_states.pop(chat_id, None)
-    bot.send_message(chat_id, "✅ تم الانتهاء من إرسال جميع الملفات المقسمة!", reply_markup=main_keyboard())
 
-# --- تنفيذ عملية الـ BIN (الزر 2) ---
-def process_bin_extraction(message):
+    if not input_text.isdigit() or int(input_text) <= 0:
+        await message.reply_text("❌ الرجاء إرسال رقم صحيح أكبر من 0!")
+        return
+
+    lines_per_file = int(input_text)
+    cards_list = user_states[chat_id].get("cards_list", [])
+    total_cards = len(cards_list)
+    total_files = math.ceil(total_cards / lines_per_file)
+
+    await message.reply_text(f"⚡ جاري التقسيم الفوري لـ {total_files} ملف(ات)...")
+
+    for i in range(total_files):
+        chunk = cards_list[i * lines_per_file : (i + 1) * lines_per_file]
+        output_text = "\n".join(chunk)
+        
+        bio = io.BytesIO(output_text.encode("utf-8"))
+        bio.name = f"split_part_{i+1}.txt"
+        
+        await message.reply_document(bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} بطاقة.")
+
+    user_states.pop(chat_id, None)
+    await message.reply_text("✅ تم الانتهاء من إرسال كافة الملفات!", reply_markup=main_keyboard)
+
+# --- تنفيذ الـ BIN (الزر 2) ---
+async def process_bin_extraction(message):
     chat_id = message.chat.id
     bin_text = message.text
-    file_content = user_states[chat_id].get('file_content', '')
+    file_content = user_states[chat_id].get("file_content", "")
 
     bins = re.findall(r'\d{6,11}', bin_text)
     if not bins:
-        bot.reply_to(message, "❌ الرجاء إرسال أرقام BIN صالحة (من 6 إلى 11 رقم).")
+        await message.reply_text("❌ الرجاء إرسال أرقام BIN صالحة.")
         return
 
+    # فلترة فائقة السرعة للأسطر المتطابقة
     full_lines = [line for line in file_content.splitlines() if any(line.startswith(b) for b in bins)]
 
     if not full_lines:
-        bot.reply_to(message, "❌ لم يتم العثور على أي بطاقات تبدأ بالـ BINs المذكورة.")
+        await message.reply_text("❌ لم يتم العثور على أي بطاقات تبدأ بهذه الـ BINs.")
         return
 
     output = "\n".join(full_lines)
-    send_result(message, output, "extracted_bins.txt")
+    await send_result(message, output, "extracted_bins.txt")
     user_states.pop(chat_id, None)
 
-# --- تنفيذ عملية التنظيف (الزر 3) ---
-def process_clearing(message, content):
+# --- تنفيذ التنظيف (الزر 3) ---
+async def process_clearing(message, content):
     cleaned_lines = []
     for line in content.splitlines():
-        # البحث عن أرقام البطاقة الأساسية وفواصلها وتجاهل الكلام الزائد
         match = re.search(r'\d{12,19}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{3,4}|\d{6,}', line)
         if match:
             cleaned_lines.append(match.group(0))
 
     if not cleaned_lines:
-        bot.reply_to(message, "❌ لم يتم العثور على بيانات صالحة للتنظيف.")
+        await message.reply_text("❌ لم يتم العثور على بيانات صالحة لتنظيفها.")
         return
 
     output = "\n".join(cleaned_lines)
-    send_result(message, output, "cleaned_cards.txt")
+    await send_result(message, output, "cleaned_cards.txt")
     user_states.pop(message.chat.id, None)
 
-# --- أداة إرسال النتائج للأزرار 2 و 3 ---
-def send_result(message, output_text, filename):
-    chat_id = message.chat.id
+# --- أداة إرسال النتائج الذكية ---
+async def send_result(message, output_text, filename):
     if len(output_text) < 4000:
-        bot.reply_to(message, f"✅ **النتيجة:**\n\n```\n{output_text}\n```", parse_mode="Markdown")
+        await message.reply_text(f"✅ **النتيجة:**\n\n```\n{output_text}\n```")
     else:
-        bio = io.BytesIO(output_text.encode('utf-8'))
+        bio = io.BytesIO(output_text.encode("utf-8"))
         bio.name = filename
-        bot.send_document(chat_id, bio, caption="✅ تم معالجة وتجهيز ملفك بنجاح وبأقصى سرعة!")
+        await message.reply_document(bio, caption="✅ تم استخراج وتجهيز الملف النظيف بنجاح وبسرعة فائقة!")
 
-# تشغيل البوت
-bot.infinity_polling()
+# تشغيل البوت المطور بنظام الـ Async
+app.run()

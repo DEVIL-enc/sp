@@ -2,12 +2,13 @@ import telebot
 from telebot import types
 import re
 import io
+import math
 
 # ضع توكن البوت الخاص بك هنا
-API_TOKEN = 'YOUR_BOT_TOKEN_HERE'
+API_TOKEN = '8923140239:AAHTBRLDDWoX__-JXSTBzTf39GKwO0_2oLc'
 bot = telebot.TeleBot(API_TOKEN)
 
-# حالات المستخدمين لتتبع الخطوات
+# حالات المستخدمين لتتبع الخطوات والبيانات المؤقتة
 user_states = {}
 
 # لوحة الأزرار الرئيسية
@@ -24,7 +25,6 @@ def send_welcome(message):
     bot.reply_to(message, "أهلاً بك! اختر أحد الخيارات من الأزرار أدناه للبدء:", reply_markup=main_keyboard())
 
 # --- التعامل مع الضغط على الأزرار ---
-
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
     chat_id = message.chat.id
@@ -32,7 +32,7 @@ def handle_buttons(message):
 
     if text == "1- تقسيم ملفات (البطاقات)":
         user_states[chat_id] = {'step': 'split_wait_file'}
-        bot.send_message(chat_id, "📥 أرسل بطاقاتك بأي صيغة في رسالة واحدة أو ملف (حتى 300 ميجابايت).")
+        bot.send_message(chat_id, "📥 أرسل ملف البطاقات (حتى 300 ميجابايت).")
 
     elif text == "2- استخراج عبر الـ BIN":
         user_states[chat_id] = {'step': 'bin_wait_file'}
@@ -43,12 +43,15 @@ def handle_buttons(message):
         bot.send_message(chat_id, "📥 أرسل بطاقاتك بأي صيغة في رسالة واحدة أو ملف (حتى 300 ميجابايت).")
         
     else:
-        # إذا كان المستخدم في خطوة انتظار الـ BINs (نصوص وليس ملفات)
-        if chat_id in user_states and user_states[chat_id].get('step') == 'bin_wait_bins':
-            process_bin_extraction(message)
+        # التعامل مع المدخلات النصية التالية للخطوات
+        if chat_id in user_states:
+            current_step = user_states[chat_id].get('step')
+            if current_step == 'split_wait_lines_count':
+                process_splitting_execution(message)
+            elif current_step == 'bin_wait_bins':
+                process_bin_extraction(message)
 
-# --- معالجة الملفات والرسائل الكبيرة بسرعة فائقة ---
-
+# --- استقبال ومعالجة الملفات الكبيرة في الذاكرة ---
 @bot.message_handler(content_types=['document', 'text'])
 def handle_docs_and_text(message):
     chat_id = message.chat.id
@@ -57,30 +60,39 @@ def handle_docs_and_text(message):
 
     step = user_states[chat_id].get('step')
     
-    # 1. الحصول على النص سواء كان رسالة نصية أو ملف
+    # الحصول على النص (من رسالة أو ملف تيكست)
     content = ""
     if message.content_type == 'text':
         content = message.text
     elif message.content_type == 'document':
-        # التحقق من حجم الملف (أقل من 300 ميجا)
         if message.document.file_size > 300 * 1024 * 1024:
             bot.reply_to(message, "❌ حجم الملف كبير جداً! الحد الأقصى هو 300 ميجابايت.")
             return
         
-        status_msg = bot.reply_to(message, "⚡ جاري القراءة والمعالجة بسرعة فائقة...")
+        status_msg = bot.reply_to(message, "⚡ جاري قراءة الملف بسرعة فائقة...")
         
-        # تحميل الملف مباشرة إلى الذاكرة دون حفظه على القرص لسرعة خيالية
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         content = downloaded_file.decode('utf-8', errors='ignore')
         bot.delete_message(chat_id, status_msg.message_id)
 
-    # 2. توجيه المحتوى حسب الزر المضغوط سابقاً
+    # توجيه الملف حسب الخطوة
     if step == 'split_wait_file':
-        process_splitting(message, content)
+        # فلترة وتصفية الأسطر أولاً لضمان وجود بطاقات فقط تحت بعضها
+        # النمط يبحث عن أي سطر يحتوي على سلسلة أرقام تبدأ بـ 6 أرقام على الأقل
+        cards = re.findall(r'\d{6,}.*', content)
+        
+        if not cards:
+            bot.reply_to(message, "❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة في هذا الملف.")
+            user_states.pop(chat_id, None)
+            return
+            
+        # حفظ البطاقات المفلترة والانتقال لسؤال المستخدم عن عدد الأسطر
+        user_states[chat_id]['cards_list'] = cards
+        user_states[chat_id]['step'] = 'split_wait_lines_count'
+        bot.reply_to(message, f"✅ تم قراءة وتصفية {len(cards)} بطاقة بنجاح.\n\n🔢 كم سطر (بطاقة) تريد في كل ملف؟ (أرسل الرقم فقط)")
         
     elif step == 'bin_wait_file':
-        # حفظ محتوى الملف مؤقتاً في ذاكرة السيرفر للانتقال للخطوة التالية
         user_states[chat_id]['file_content'] = content
         user_states[chat_id]['step'] = 'bin_wait_bins'
         bot.reply_to(message, "✅ تم قراءة الملف بنجاح.\n\n📥 الآن، أرسل قائمة الـ BINs (من 6 إلى 11 رقم) المراد استخراجها، مفصولة بأي فاصل.\n\nمثال: 442755, 4852464, 434769")
@@ -88,41 +100,57 @@ def handle_docs_and_text(message):
     elif step == 'clear_wait_file':
         process_clearing(message, content)
 
-# --- الوظائف التنفيذية (Engine) ---
-
-def process_splitting(message, content):
-    """الزر 1: استخراج الأسطر التي تبدأ بأرقام وتصفيتها كبطاقات تحت بعضها"""
-    # Regex لجلب الأسطر التي تبدأ بـ 6 أرقام على الأقل وتستمر كصيغة بطاقة
-    pattern = re.compile(r'^\d{6,}.*$', re.MULTILINE)
-    matches = pattern.findall(content)
+# --- تنفيذ عملية التقسيم (تعديل الزر 1) ---
+def process_splitting_execution(message):
+    chat_id = message.chat.id
+    input_text = message.text
     
-    if not matches:
-        bot.reply_to(message, "❌ لم يتم العثور على أي بطاقات مطابقة للصيغة.")
+    if not input_text.isdigit():
+        bot.reply_to(message, "❌ الرجاء إرسال رقم صحيح فقط!")
         return
+        
+    lines_per_file = int(input_text)
+    if lines_per_file <= 0:
+        bot.reply_to(message, "❌ يجب أن يكون العدد أكبر من 0.")
+        return
+        
+    cards_list = user_states[chat_id].get('cards_list', [])
+    total_cards = len(cards_list)
+    
+    # حساب عدد الملفات المطلوبة
+    total_files = math.ceil(total_cards / lines_per_file)
+    
+    bot.send_message(chat_id, f"⚡ جاري تقسيم البطاقات إلى {total_files} ملف(ات)...")
+    
+    # تقسيم وإرسال الملفات بشكل فوري من الذاكرة
+    for i in range(total_files):
+        start_index = i * lines_per_file
+        end_index = start_index + lines_per_file
+        chunk = cards_list[start_index:end_index]
+        
+        output_text = "\n".join(chunk)
+        filename = f"split_part_{i+1}.txt"
+        
+        # تحويل النص لملف في الذاكرة وإرساله بسرعة خيالية
+        bio = io.BytesIO(output_text.encode('utf-8'))
+        bio.name = filename
+        bot.send_document(chat_id, bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} بطاقة.")
+        
+    # تنظيف الحالة بعد الانتهاء
+    user_states.pop(chat_id, None)
+    bot.send_message(chat_id, "✅ تم الانتهاء من إرسال جميع الملفات المقسمة!", reply_markup=main_keyboard())
 
-    output = "\n".join(matches)
-    send_result(message, output, "cards_split.txt")
-
+# --- تنفيذ عملية الـ BIN (الزر 2) ---
 def process_bin_extraction(message):
-    """الزر 2: استخراج البطاقات بناءً على الـ BINs المرسلة"""
     chat_id = message.chat.id
     bin_text = message.text
     file_content = user_states[chat_id].get('file_content', '')
 
-    # استخراج الـ BINs من رسالة المستخدم (أي أرقام طولها بين 6 و 11)
     bins = re.findall(r'\d{6,11}', bin_text)
-    
     if not bins:
         bot.reply_to(message, "❌ الرجاء إرسال أرقام BIN صالحة (من 6 إلى 11 رقم).")
         return
 
-    # إنشاء تعبير نمطي فائق السرعة للبحث عن الأسطر التي تبدأ بهذه الـ BINs
-    bin_pattern = "|".join(bins)
-    pattern = re.compile(rf'^({bin_pattern}).*$', re.MULTILINE)
-    matches = pattern.findall(file_content)
-
-    # إعادة تجميع الأسطر كاملة التي تطابقت مع الـ BINs المحفوظة
-    # بما أن findall مع المجموعات ترجع الـ group فقط، سنستخدم split أو finditer للسطر الكامل لضمان السرعة والدقة:
     full_lines = [line for line in file_content.splitlines() if any(line.startswith(b) for b in bins)]
 
     if not full_lines:
@@ -131,16 +159,13 @@ def process_bin_extraction(message):
 
     output = "\n".join(full_lines)
     send_result(message, output, "extracted_bins.txt")
-    # تنظيف الحالة
     user_states.pop(chat_id, None)
 
+# --- تنفيذ عملية التنظيف (الزر 3) ---
 def process_clearing(message, content):
-    """الزر 3: تنظيف الأسطر وحذف الكلام الزائد لتبدو كبطاقات صافية"""
-    # تنظيف الأسطر بحيث نأخذ فقط الأرقام والرموز الخاصة بالبطاقة مثل (| أو / أو :) ونحذف الحروف العشوائية
-    # هذا النمط يستخرج السلسلة التي تبدأ بأرقام وتحتوي على فواصل البطاقات المعروفة ويترك الحروف الزائدة.
     cleaned_lines = []
     for line in content.splitlines():
-        # البحث عن أرقام البطاقة الأساسية وما يتصل بها من فواصل وأرقام أخرى
+        # البحث عن أرقام البطاقة الأساسية وفواصلها وتجاهل الكلام الزائد
         match = re.search(r'\d{12,19}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{3,4}|\d{6,}', line)
         if match:
             cleaned_lines.append(match.group(0))
@@ -151,19 +176,17 @@ def process_clearing(message, content):
 
     output = "\n".join(cleaned_lines)
     send_result(message, output, "cleaned_cards.txt")
+    user_states.pop(message.chat.id, None)
 
-# --- أداة إرسال النتائج الذكية ---
+# --- أداة إرسال النتائج للأزرار 2 و 3 ---
 def send_result(message, output_text, filename):
-    """ترسل النتيجة كنص إذا كانت قصيرة، أو كملف txt سريع إذا كانت ضخمة جداً"""
     chat_id = message.chat.id
-    
     if len(output_text) < 4000:
         bot.reply_to(message, f"✅ **النتيجة:**\n\n```\n{output_text}\n```", parse_mode="Markdown")
     else:
-        # تحويل النص إلى ملف في الذاكرة دون استهلاك الهارد ديسك وإرساله فوراً
         bio = io.BytesIO(output_text.encode('utf-8'))
         bio.name = filename
         bot.send_document(chat_id, bio, caption="✅ تم معالجة وتجهيز ملفك بنجاح وبأقصى سرعة!")
 
-# تشغيل البوت المستمر
+# تشغيل البوت
 bot.infinity_polling()

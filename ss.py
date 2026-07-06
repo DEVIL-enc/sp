@@ -71,22 +71,26 @@ async def handle_files(client, message):
     elif message.document:
         status_msg = await message.reply_text("⚡ جاري تحميل وقراءة الملف بسرعة فائقة جداً...")
         
-        # تحميل مباشر في الرام لتوفير السرعة
         file_buffer = io.BytesIO()
         await client.download_media(message.document, in_memory=file_buffer)
         file_buffer.seek(0)
         
+        # قراءة النص بالكامل والتعامل الذكي مع الفواصل
         content = file_buffer.read().decode("utf-8", errors="ignore")
         await status_msg.delete()
 
     # --- تنفيذ التوجيه بناءً على الحالة ---
     
     if state == "split_wait_file":
-        # الآن نأخذ جميع الأسطر بدون أي تصفية لضمان قراءة ملفك بنسبة 100% مهما كان شكله
-        cards = [line.strip() for line in content.splitlines() if line.strip()]
+        # قراءة الأسطر وفلترتها للتأكد من أخذ السطر كاملاً كما هو بالصورة المرفقة
+        cards = []
+        for line in content.split('\n'):
+            line_str = line.strip()
+            if line_str:
+                cards.append(line_str)
                 
         if not cards:
-            await message.reply_text("❌ الملف فارغ أو لا يحتوي على أسطر صالحة للقراءة.")
+            await message.reply_text("❌ لم يتم قراءة أي نص صالحة من الملف.")
             user_states.pop(chat_id, None)
             return
         
@@ -97,7 +101,7 @@ async def handle_files(client, message):
     elif state == "bin_wait_file":
         user_states[chat_id]["file_content"] = content
         user_states[chat_id]["step"] = "bin_wait_bins"
-        await message.reply_text("✅ تم قراءة الملف بنجاح.\n\n📥 الآن، أرسل قائمة الـ BINs (من 6 إلى 11 رقم)، مفصولة بأي فاصل.\n\nمثال: 442755, 4852464")
+        await message.reply_text("✅ تم قراءة الملف بنجاح.\n\n📥 الآن، أرسل قائمة الـ BINs (من 6 إلى 11 رقم)، مفصولة بأي فاصل.\n\nمثال: 521853, 4852464")
 
     elif state == "clear_wait_file":
         await process_clearing(message, content)
@@ -125,7 +129,7 @@ async def process_splitting_execution(message):
         bio = io.BytesIO(output_text.encode("utf-8"))
         bio.name = f"split_part_{i+1}.txt"
         
-        await message.reply_document(bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} سطر.")
+        await message.reply_document(bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} سطر بنفس الصيغة.")
 
     user_states.pop(chat_id, None)
     await message.reply_text("✅ تم الانتهاء من إرسال كافة الملفات!", reply_markup=main_keyboard)
@@ -141,9 +145,9 @@ async def process_bin_extraction(message):
         await message.reply_text("❌ الرجاء إرسال أرقام BIN صالحة.")
         return
 
-    # الفلترة الذكية للـ BIN في أي مكان يبدأ به السطر النظيف
+    # الفلترة الذكية والمطابقة مع بداية السطر تماماً للحفاظ على الصيغة الأصلية
     full_lines = []
-    for line in file_content.splitlines():
+    for line in file_content.split('\n'):
         clean_line = line.strip()
         if any(clean_line.startswith(b) for b in bins):
             full_lines.append(clean_line)
@@ -159,14 +163,14 @@ async def process_bin_extraction(message):
 # --- تنفيذ التنظيف (الزر 3) ---
 async def process_clearing(message, content):
     cleaned_lines = []
-    for line in content.splitlines():
-        # استخراج أرقام البطاقة والفواصل فقط من السطر وحذف أي نصوص وحروف عشوائية زائدة
-        match = re.search(r'\d{12,19}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{3,4}|\d{6,}', line)
+    for line in content.split('\n'):
+        # استخراج أرقام البطاقة الأساسية مع فواصلها (رقم البطاقة|الشهر|السنة|الـ CVV) وتجاهل الحروف والأسماء الأخرى
+        match = re.search(r'\d{15,16}[\s|/;:|-]\d{2}[\s|/;:|-]\d{2,4}[\s|/;:|-]\d{3,4}', line)
         if match:
             cleaned_lines.append(match.group(0))
 
     if not cleaned_lines:
-        await message.reply_text("❌ لم يتم العثور على بيانات صالحة لتنظيفها.")
+        await message.reply_text("❌ لم يتم العثور على صيغ بطاقات صالحة لتنظيفها.")
         return
 
     output = "\n".join(cleaned_lines)

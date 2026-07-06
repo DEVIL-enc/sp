@@ -4,7 +4,7 @@ import io
 import re
 import math
 
-# بيانات البوت الخاصة بك
+# ضع بيانات البوت الخاصة بك هنا
 API_ID = 39825025          # استبدله بـ api_id الخاص بك (رقم)
 API_HASH = "47170fd9a11b3f591bbc56849519f0f8"    # استبدله بـ api_hash الخاص بك (نص)
 BOT_TOKEN = "8923140239:AAHTBRLDDWoX__-JXSTBzTf39GKwO0_2oLc"
@@ -82,20 +82,17 @@ async def handle_files(client, message):
     # --- تنفيذ التوجيه بناءً على الحالة ---
     
     if state == "split_wait_file":
-        # محرك الفلترة المطور: يبحث عن أي سطر يحتوي على 6 أرقام متتالية على الأقل في أي مكان بالسطر
-        cards = []
-        for line in content.splitlines():
-            if re.search(r'\d{6,}', line):
-                cards.append(line.strip())
+        # الآن نأخذ جميع الأسطر بدون أي تصفية لضمان قراءة ملفك بنسبة 100% مهما كان شكله
+        cards = [line.strip() for line in content.splitlines() if line.strip()]
                 
         if not cards:
-            await message.reply_text("❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة في ملفك. تأكد من أن البطاقات تحتوي على أرقام.")
+            await message.reply_text("❌ الملف فارغ أو لا يحتوي على أسطر صالحة للقراءة.")
             user_states.pop(chat_id, None)
             return
         
         user_states[chat_id]["cards_list"] = cards
         user_states[chat_id]["step"] = "split_wait_lines_count"
-        await message.reply_text(f"✅ تم قراءة وتصفية {len(cards)} بطاقة بنجاح.\n\n🔢 كم سطر (بطاقة) تريد في كل ملف؟ (أرسل الرقم فقط)")
+        await message.reply_text(f"✅ تم قراءة {len(cards)} سطر بنجاح.\n\n🔢 كم سطر تريد في كل ملف؟ (أرسل الرقم فقط)")
 
     elif state == "bin_wait_file":
         user_states[chat_id]["file_content"] = content
@@ -128,7 +125,7 @@ async def process_splitting_execution(message):
         bio = io.BytesIO(output_text.encode("utf-8"))
         bio.name = f"split_part_{i+1}.txt"
         
-        await message.reply_document(bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} بطاقة.")
+        await message.reply_document(bio, caption=f"📄 جزء رقم {i+1} يحتوي على {len(chunk)} سطر.")
 
     user_states.pop(chat_id, None)
     await message.reply_text("✅ تم الانتهاء من إرسال كافة الملفات!", reply_markup=main_keyboard)
@@ -148,7 +145,6 @@ async def process_bin_extraction(message):
     full_lines = []
     for line in file_content.splitlines():
         clean_line = line.strip()
-        # التحقق إذا كان السطر يبدأ بأي من الـ BINs المطلوبة
         if any(clean_line.startswith(b) for b in bins):
             full_lines.append(clean_line)
 

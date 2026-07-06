@@ -3,9 +3,8 @@ from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton
 import io
 import re
 import math
-import asyncio
 
-# بيانات البوت الخاصة بك (احصل على api_id و api_hash من my.telegram.org)
+# بيانات البوت الخاصة بك
 API_ID = 39825025          # استبدله بـ api_id الخاص بك (رقم)
 API_HASH = "47170fd9a11b3f591bbc56849519f0f8"    # استبدله بـ api_hash الخاص بك (نص)
 BOT_TOKEN = "8923140239:AAHTBRLDDWoX__-JXSTBzTf39GKwO0_2oLc"
@@ -35,18 +34,18 @@ async def handle_text(client, message):
 
     if text == "1- تقسيم ملفات (البطاقات)":
         user_states[chat_id] = {"step": "split_wait_file"}
-        await message.reply_text("📥 أرسل ملف البطاقات (يدعم حتى 2 جيجابايت بسرعات خيالية).")
+        await message.reply_text("📥 أرسل ملف البطاقات (حتى 300 ميجابايت بسرعات خيالية).")
         return
     elif text == "2- استخراج عبر الـ BIN":
         user_states[chat_id] = {"step": "bin_wait_file"}
-        await message.reply_text("📥 أرسل ملف البطاقات الخاص بك (يدعم حتى 2 جيجابايت).")
+        await message.reply_text("📥 أرسل ملف البطاقات الخاص بك (يدعم حتى 300 ميجابايت).")
         return
     elif text == "3- تنظيف الملف (Clear)":
         user_states[chat_id] = {"step": "clear_wait_file"}
-        await message.reply_text("📥 أرسل ملف البطاقات المراد تنظيفه (يدعم حتى 2 جيجابايت).")
+        await message.reply_text("📥 أرسل ملف البطاقات المراد تنظيفه (يدعم حتى 300 ميجابايت).")
         return
 
-    # إذا كان المستخدم يرسل الـ BINs أو عدد الأسطر يدوياً
+    # استجابة الخطوات التالية للعمليات
     if chat_id in user_states:
         state = user_states[chat_id].get("step")
         if state == "split_wait_lines_count":
@@ -54,7 +53,7 @@ async def handle_text(client, message):
         elif state == "bin_wait_bins":
             await process_bin_extraction(message)
 
-# --- معالجة قراءة وتحميل الملفات الضخمة في الذاكرة ---
+# --- معالجة تحميل وقراءة الملفات الضخمة بالذاكرة ---
 @app.on_message((filters.document | filters.text) & filters.incoming)
 async def handle_files(client, message):
     chat_id = message.chat.id
@@ -63,16 +62,16 @@ async def handle_files(client, message):
 
     state = user_states[chat_id].get("step")
     if state in ["split_wait_lines_count", "bin_wait_bins"]:
-        return # تخطي الملفات إذا كنا ننتظر أرقام أو نصوص
+        return  # تخطي معالجة المستندات إذا كنا ننتظر مدخلات نصية
 
     content = ""
     
     if message.text:
         content = message.text
     elif message.document:
-        status_msg = await message.reply_text("⚡ جاري تحميل وقراءة الملف الضخم في الذاكرة بأقصى سرعة...")
+        status_msg = await message.reply_text("⚡ جاري تحميل وقراءة الملف بسرعة فائقة جداً...")
         
-        # تحميل الملف مباشرة إلى الذاكرة (Memory Stream) دون حفظه على القرص لسرعة خارقة
+        # تحميل مباشر في الرام لتوفير السرعة
         file_buffer = io.BytesIO()
         await client.download_media(message.document, in_memory=file_buffer)
         file_buffer.seek(0)
@@ -80,11 +79,17 @@ async def handle_files(client, message):
         content = file_buffer.read().decode("utf-8", errors="ignore")
         await status_msg.delete()
 
-    # توجيه البيانات بناءً على العملية المطلوبة
+    # --- تنفيذ التوجيه بناءً على الحالة ---
+    
     if state == "split_wait_file":
-        cards = re.findall(r'\d{6,}.*', content)
+        # محرك الفلترة المطور: يبحث عن أي سطر يحتوي على 6 أرقام متتالية على الأقل في أي مكان بالسطر
+        cards = []
+        for line in content.splitlines():
+            if re.search(r'\d{6,}', line):
+                cards.append(line.strip())
+                
         if not cards:
-            await message.reply_text("❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة.")
+            await message.reply_text("❌ لم يتم العثور على أسطر تحتوي على بطاقات صالحة في ملفك. تأكد من أن البطاقات تحتوي على أرقام.")
             user_states.pop(chat_id, None)
             return
         
@@ -139,8 +144,13 @@ async def process_bin_extraction(message):
         await message.reply_text("❌ الرجاء إرسال أرقام BIN صالحة.")
         return
 
-    # فلترة فائقة السرعة للأسطر المتطابقة
-    full_lines = [line for line in file_content.splitlines() if any(line.startswith(b) for b in bins)]
+    # الفلترة الذكية للـ BIN في أي مكان يبدأ به السطر النظيف
+    full_lines = []
+    for line in file_content.splitlines():
+        clean_line = line.strip()
+        # التحقق إذا كان السطر يبدأ بأي من الـ BINs المطلوبة
+        if any(clean_line.startswith(b) for b in bins):
+            full_lines.append(clean_line)
 
     if not full_lines:
         await message.reply_text("❌ لم يتم العثور على أي بطاقات تبدأ بهذه الـ BINs.")
@@ -154,6 +164,7 @@ async def process_bin_extraction(message):
 async def process_clearing(message, content):
     cleaned_lines = []
     for line in content.splitlines():
+        # استخراج أرقام البطاقة والفواصل فقط من السطر وحذف أي نصوص وحروف عشوائية زائدة
         match = re.search(r'\d{12,19}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{1,4}[\s|/;:|-]\d{3,4}|\d{6,}', line)
         if match:
             cleaned_lines.append(match.group(0))
@@ -173,7 +184,7 @@ async def send_result(message, output_text, filename):
     else:
         bio = io.BytesIO(output_text.encode("utf-8"))
         bio.name = filename
-        await message.reply_document(bio, caption="✅ تم استخراج وتجهيز الملف النظيف بنجاح وبسرعة فائقة!")
+        await message.reply_document(bio, caption="✅ تم استخراج وتجهيز الملف بنجاح وبسرعة فائقة!")
 
-# تشغيل البوت المطور بنظام الـ Async
+# تشغيل البوت
 app.run()
